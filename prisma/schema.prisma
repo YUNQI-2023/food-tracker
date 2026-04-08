@@ -1,0 +1,229 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Product {
+  id                    Int              @id @default(autoincrement())
+  name                  String
+  brand                 String?
+  category              String           @default("other")
+  defaultUnit           String           @default("unit")
+  gramsPerUnit          Float?
+  mlPerUnit             Float?
+  caloriesPer100g       Float?
+  proteinPer100g        Float?
+  fatPer100g            Float?
+  carbsPer100g          Float?
+  sugarPer100g          Float?
+  sodiumPer100g         Float?
+  shelfLifeDays         Int?
+  openedShelfLifeDays   Int?
+  isFood                Boolean          @default(true) // false for household/non-food items
+  // Nutrition enrichment fields
+  nutritionSource       String?          // "usda", "openfoodfacts", "manual", "fallback"
+  nutritionSourceType   String?          // "api", "manual", "ai_assisted", "fallback"
+  nutritionConfidence   Float?           // 0.0 - 1.0
+  externalProductId     String?          // e.g. USDA fdcId or OFF barcode
+  externalQuery         String?          // the search query that found this match
+  nutritionLastFetchedAt DateTime?
+  rawNutritionJson      String?          // full API response stored as JSON string
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  inventoryBatches      InventoryBatch[]
+  importItems           PurchaseImportItem[]
+  nutritionLookups      NutritionLookupLog[]
+}
+
+model InventoryBatch {
+  id                  Int              @id @default(autoincrement())
+  productId           Int
+  product             Product          @relation(fields: [productId], references: [id])
+  sourceType          String           @default("manual") // manual, csv, text, pdf
+  sourceImportId      Int?
+  purchaseDate        DateTime         @default(now())
+  quantityInitial     Float
+  quantityCurrent     Float
+  unit                String           @default("unit")
+  totalWeightGrams    Float?
+  totalVolumeMl       Float?
+  manufactureDate     DateTime?
+  expiryDate          DateTime?
+  estimatedExpiryDate DateTime?
+  openedDate          DateTime?
+  storageLocation     String?
+  storageType         String?          // "refrigerated", "frozen", "pantry", "room_temp"
+  status              String           @default("fresh") // fresh, expiring_soon, expired, consumed
+  notes               String?
+  // Shelf-life estimation metadata
+  shelfLifeSource     String?          // "explicit", "rule:blueberry", "rule:category:fruit", "none"
+  shelfLifeConfidence String?          // "high", "medium", "low"
+  shelfLifeReason     String?          // human-readable explanation
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  consumptionLogs    ConsumptionLog[]
+  mealItems          MealItem[]
+}
+
+model ShelfLifeRule {
+  id                   Int      @id @default(autoincrement())
+  canonicalName        String?           // e.g. "blueberry", null for category-level rules
+  category             String            // e.g. "fruit", "dairy"
+  storageType          String            // "refrigerated", "frozen", "pantry", "room_temp"
+  defaultShelfLifeDays Int
+  openedShelfLifeDays  Int?
+  minShelfLifeDays     Int?
+  maxShelfLifeDays     Int?
+  confidence           String            // "high", "medium", "low"
+  sourceNote           String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model PurchaseImport {
+  id          Int                  @id @default(autoincrement())
+  sourceType  String               // csv, text, pdf
+  rawText     String?
+  filePath    String?
+  parseStatus String               @default("pending") // pending, parsed, imported, error
+  createdAt   DateTime             @default(now())
+
+  items       PurchaseImportItem[]
+}
+
+model PurchaseImportItem {
+  id                Int            @id @default(autoincrement())
+  purchaseImportId  Int
+  purchaseImport    PurchaseImport @relation(fields: [purchaseImportId], references: [id], onDelete: Cascade)
+  rawName           String
+  parsedName        String
+  category          String?
+  quantity          Float?
+  unit              String?
+  totalWeightGrams  Float?
+  totalVolumeMl     Float?
+  purchaseDate      DateTime?
+  expiryDate        DateTime?
+  matchedProductId  Int?
+  matchedProduct    Product?       @relation(fields: [matchedProductId], references: [id])
+  confidence        Float?
+  needsReview       Boolean        @default(true)
+  isFood            Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+}
+
+/// Legacy single-item consumption log – kept for backward compatibility.
+/// New meals go through Meal + MealItem. ConsumptionLogs can also be
+/// created standalone (e.g. quick-decrement on inventory page).
+model ConsumptionLog {
+  id               Int            @id @default(autoincrement())
+  inventoryBatchId Int
+  inventoryBatch   InventoryBatch @relation(fields: [inventoryBatchId], references: [id])
+  mealType         String         // breakfast, lunch, dinner, snack
+  consumedAt       DateTime       @default(now())
+  quantityUsed     Float
+  unit             String
+  weightUsedGrams  Float?
+  volumeUsedMl     Float?
+  calories         Float?
+  protein          Float?
+  fat              Float?
+  carbs            Float?
+  notes            String?
+  recipeId         Int?
+  recipe           Recipe?        @relation(fields: [recipeId], references: [id])
+  mealId           Int?
+  meal             Meal?          @relation(fields: [mealId], references: [id], onDelete: SetNull)
+  createdAt        DateTime       @default(now())
+}
+
+/// A meal groups multiple consumption items together
+model Meal {
+  id          Int              @id @default(autoincrement())
+  mealType    String           // breakfast, lunch, dinner, snack
+  consumedAt  DateTime         @default(now())
+  notes       String?
+  recipeId    Int?
+  recipe      Recipe?          @relation(fields: [recipeId], references: [id])
+  // Aggregated nutrition (cached, recomputed on edit)
+  calories    Float?
+  protein     Float?
+  fat         Float?
+  carbs       Float?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  items       MealItem[]
+  consumptionLogs ConsumptionLog[]
+}
+
+/// Individual item within a meal
+model MealItem {
+  id               Int            @id @default(autoincrement())
+  mealId           Int
+  meal             Meal           @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  inventoryBatchId Int
+  inventoryBatch   InventoryBatch @relation(fields: [inventoryBatchId], references: [id])
+  quantityUsed     Float
+  unit             String
+  weightUsedGrams  Float?
+  calories         Float?
+  protein          Float?
+  fat              Float?
+  carbs            Float?
+  createdAt        DateTime       @default(now())
+}
+
+model Recipe {
+  id                Int                @id @default(autoincrement())
+  name              String
+  description       String
+  instructions      String
+  cuisineType       String?
+  estimatedCalories Float?
+  estimatedProtein  Float?
+  estimatedFat      Float?
+  estimatedCarbs    Float?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  ingredients       RecipeIngredient[]
+  consumptionLogs   ConsumptionLog[]
+  meals             Meal[]
+}
+
+model NutritionLookupLog {
+  id              Int      @id @default(autoincrement())
+  productId       Int
+  product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  provider        String   // "usda", "openfoodfacts"
+  query           String
+  resultCount     Int      @default(0)
+  bestMatchName   String?
+  bestMatchId     String?
+  confidence      Float?
+  accepted        Boolean  @default(false) // was this result used?
+  rawResponse     String?  // JSON of top candidates
+  error           String?
+  createdAt       DateTime @default(now())
+}
+
+model RecipeIngredient {
+  id             Int     @id @default(autoincrement())
+  recipeId       Int
+  recipe         Recipe  @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  ingredientName String
+  category       String?
+  quantity       Float
+  unit           String
+  grams          Float?
+  ml             Float?
+  optional       Boolean @default(false)
+  createdAt      DateTime @default(now())
+}
