@@ -198,6 +198,25 @@ model Recipe {
   meals             Meal[]
 }
 
+/// Persistent cache of nutrition lookup results keyed by normalized
+/// product name + brand. Used to make repeated lookups deterministic
+/// so the same query returns the same best match / candidate list
+/// within the TTL window.
+model NutritionLookupCache {
+  id             Int      @id @default(autoincrement())
+  cacheKey       String   @unique
+  productName    String
+  brand          String?
+  matched        Boolean  @default(false)
+  confidence     Float?
+  source         String?
+  sourceType     String?
+  bestMatchJson  String?  // JSON of best candidate
+  candidatesJson String   // JSON array of top candidates
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
 model NutritionLookupLog {
   id              Int      @id @default(autoincrement())
   productId       Int

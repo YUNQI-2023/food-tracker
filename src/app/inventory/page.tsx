@@ -119,6 +119,7 @@ function InventoryContent() {
     loading: boolean;
     bestMatch: NutritionCandidate | null;
     confidence: number;
+    error: string | null;
   } | null>(null);
 
   const fetchItems = useCallback(async () => {
@@ -154,13 +155,14 @@ function InventoryContent() {
     await handleAction(id, "delete");
   }
 
-  async function handleNutritionLookup(item: InventoryItem) {
+  async function handleNutritionLookup(item: InventoryItem, forceRefresh = false) {
     setNutritionModal({
       item,
       candidates: [],
       loading: true,
       bestMatch: null,
       confidence: 0,
+      error: null,
     });
 
     try {
@@ -171,8 +173,22 @@ function InventoryContent() {
           productId: item.product.id,
           productName: item.product.name,
           brand: item.product.brand || undefined,
+          forceRefresh,
         }),
       });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.error) detail = body.error;
+        } catch {
+          // ignore — response body was not JSON
+        }
+        setNutritionModal((prev) =>
+          prev ? { ...prev, loading: false, error: `Lookup failed: ${detail}` } : null
+        );
+        return;
+      }
       const data = await res.json();
       setNutritionModal((prev) =>
         prev
@@ -182,12 +198,14 @@ function InventoryContent() {
               candidates: data.candidates || [],
               bestMatch: data.bestMatch || null,
               confidence: data.confidence || 0,
+              error: null,
             }
           : null
       );
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "network error";
       setNutritionModal((prev) =>
-        prev ? { ...prev, loading: false } : null
+        prev ? { ...prev, loading: false, error: `Lookup failed: ${msg}` } : null
       );
     }
   }
@@ -601,14 +619,37 @@ function InventoryContent() {
               <h3 className="font-semibold">
                 Nutrition Lookup: {nutritionModal.item.product.name}
               </h3>
-              <button onClick={() => setNutritionModal(null)}>
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleNutritionLookup(nutritionModal.item, true)}
+                  disabled={nutritionModal.loading}
+                  className="text-xs px-2 py-1 rounded bg-secondary hover:bg-secondary/80 disabled:opacity-50"
+                  title="Bypass cache and re-query providers"
+                >
+                  Refresh search
+                </button>
+                <button onClick={() => setNutritionModal(null)}>
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
             {nutritionModal.loading ? (
               <div className="text-center py-8 text-muted-foreground">
                 Searching nutrition databases...
+              </div>
+            ) : nutritionModal.error ? (
+              <div className="text-center py-8 space-y-2">
+                <div className="text-sm text-red-600">{nutritionModal.error}</div>
+                <div className="text-xs text-muted-foreground">
+                  The server couldn&apos;t complete the lookup. Check the server logs and try again.
+                </div>
+                <button
+                  onClick={() => handleNutritionLookup(nutritionModal.item, true)}
+                  className="text-xs px-3 py-1 rounded bg-secondary hover:bg-secondary/80"
+                >
+                  Retry
+                </button>
               </div>
             ) : nutritionModal.candidates.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
