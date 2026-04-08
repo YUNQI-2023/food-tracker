@@ -6,6 +6,7 @@ import {
   CheckCircle,
   AlertTriangle,
   XCircle,
+  Sparkles,
 } from "lucide-react";
 
 interface ScoredRecipe {
@@ -27,15 +28,59 @@ interface ScoredRecipe {
   coveragePercent: number;
 }
 
+interface AIRecipe {
+  name: string;
+  description: string;
+  ingredientsUsed: Array<{ name: string; quantity?: string; fromInventory: boolean }>;
+  missingIngredients: Array<{ name: string; quantity?: string; optional: boolean }>;
+  steps: string[];
+  estimatedNutrition?: {
+    calories?: number | null;
+    protein?: number | null;
+    fat?: number | null;
+    carbs?: number | null;
+  };
+  reason: string;
+  cuisineType?: string | null;
+  estimatedTimeMinutes?: number | null;
+}
+
 export default function RecipesPage() {
   const [recipes, setRecipes] = useState<ScoredRecipe[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [cooking, setCooking] = useState<number | null>(null);
   const [cookResult, setCookResult] = useState<string>("");
+  const [aiRecipes, setAiRecipes] = useState<AIRecipe[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/recipes").then((r) => r.json()).then(setRecipes);
   }, []);
+
+  async function handleAIRecommend() {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const res = await fetch("/api/recipes/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count: 3 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiError(data.error || `Request failed (HTTP ${res.status})`);
+        setAiRecipes([]);
+      } else {
+        setAiRecipes(data.recommendations || []);
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "Network error");
+      setAiRecipes([]);
+    } finally {
+      setAiLoading(false);
+    }
+  }
 
   async function handleCook(recipeId: number, mealType: string) {
     setCooking(recipeId);
@@ -71,6 +116,129 @@ export default function RecipesPage() {
           {cookResult}
         </div>
       )}
+
+      {/* AI Recommendations */}
+      <div className="bg-card rounded-lg border border-border p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-indigo-500" />
+              AI Recipe Recommendations
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Uses your current inventory and prioritizes expiring items.
+            </p>
+          </div>
+          <button
+            onClick={handleAIRecommend}
+            disabled={aiLoading}
+            className="px-3 py-1.5 rounded text-sm bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+          >
+            <Sparkles className="h-3 w-3" />
+            {aiLoading ? "Thinking..." : "AI Recommend"}
+          </button>
+        </div>
+
+        {aiError && (
+          <div className="bg-red-50 text-red-700 p-3 rounded text-sm">
+            <div className="font-medium">AI recommendation failed</div>
+            <div className="text-xs mt-1">{aiError}</div>
+          </div>
+        )}
+
+        {aiRecipes.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {aiRecipes.map((r, idx) => (
+              <div
+                key={idx}
+                className="border border-border rounded-lg p-3 space-y-2 bg-secondary/10"
+              >
+                <div>
+                  <div className="font-semibold text-sm flex items-center gap-1">
+                    <Sparkles className="h-3 w-3 text-indigo-500" />
+                    {r.name}
+                  </div>
+                  {r.cuisineType && (
+                    <span className="text-xs bg-secondary text-muted-foreground px-1.5 py-0.5 rounded">
+                      {r.cuisineType}
+                    </span>
+                  )}
+                  <p className="text-xs text-muted-foreground mt-1">{r.description}</p>
+                </div>
+
+                <div className="text-xs bg-indigo-50 text-indigo-700 rounded p-2">
+                  <span className="font-medium">Why: </span>
+                  {r.reason}
+                </div>
+
+                <div>
+                  <div className="text-xs font-medium mb-1">Uses from inventory</div>
+                  <div className="flex flex-wrap gap-1">
+                    {r.ingredientsUsed.map((ing, i) => (
+                      <span
+                        key={i}
+                        className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded flex items-center gap-1"
+                      >
+                        <CheckCircle className="h-3 w-3" />
+                        {ing.name}
+                        {ing.quantity ? ` (${ing.quantity})` : ""}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {r.missingIngredients.length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium mb-1">Missing</div>
+                    <div className="flex flex-wrap gap-1">
+                      {r.missingIngredients.map((ing, i) => (
+                        <span
+                          key={i}
+                          className="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded flex items-center gap-1"
+                        >
+                          <XCircle className="h-3 w-3" />
+                          {ing.name}
+                          {ing.quantity ? ` (${ing.quantity})` : ""}
+                          {ing.optional ? " · optional" : ""}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div className="text-xs font-medium mb-1">Steps</div>
+                  <ol className="text-xs text-muted-foreground list-decimal ml-4 space-y-0.5">
+                    {r.steps.map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ol>
+                </div>
+
+                {r.estimatedNutrition && (
+                  <div className="text-xs text-muted-foreground flex flex-wrap gap-2">
+                    {r.estimatedNutrition.calories != null && (
+                      <span>{Math.round(r.estimatedNutrition.calories)} kcal</span>
+                    )}
+                    {r.estimatedNutrition.protein != null && (
+                      <span>P {Math.round(r.estimatedNutrition.protein)}g</span>
+                    )}
+                    {r.estimatedNutrition.fat != null && (
+                      <span>F {Math.round(r.estimatedNutrition.fat)}g</span>
+                    )}
+                    {r.estimatedNutrition.carbs != null && (
+                      <span>C {Math.round(r.estimatedNutrition.carbs)}g</span>
+                    )}
+                    {r.estimatedTimeMinutes != null && (
+                      <span>· ~{r.estimatedTimeMinutes} min</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="space-y-4">
         {recipes.map((r) => {
