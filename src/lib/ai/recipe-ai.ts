@@ -6,7 +6,7 @@
  * missing ones. The response is constrained to a strict JSON schema and
  * validated with zod so downstream code can treat it as typed data.
  *
- * We intentionally call the Anthropic Messages API via `fetch` to avoid
+ * We intentionally call the Gemini GenerateContent API via `fetch` to avoid
  * adding a new SDK dependency. The API key is read from the environment.
  */
 
@@ -159,7 +159,7 @@ function buildUserPrompt(items: InventorySummaryItem[], count: number): string {
 CURRENT INVENTORY:
 ${formatInventoryForPrompt(items)}
 
-Respond with ONLY the JSON object — no markdown, no commentary.`;
+Keep each description and reason concise. Keep each step short. Limit missing ingredients to the essentials. Respond with ONLY the JSON object — no markdown, no commentary.`;
 }
 
 // ---- Response parsing ----
@@ -178,50 +178,82 @@ function extractJsonPayload(text: string): string {
 
 // ---- Main entrypoint ----
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
 export async function generateAIRecipeRecommendations(
   inventory: InventorySummaryItem[],
   count = 3
 ): Promise<AIRecipeResponse> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new AIUnavailableError(
-      "ANTHROPIC_API_KEY is not set. AI recipe recommendations are disabled."
+      "GEMINI_API_KEY is not set. AI recipe recommendations are disabled."
     );
   }
-  const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
 
-  const res = await fetch(ANTHROPIC_API_URL, {
+  const res = await fetch(
+    `${GEMINI_API_URL}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model,
-      max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildUserPrompt(inventory, count) }],
+      systemInstruction: {
+        parts: [{ text: SYSTEM_PROMPT }],
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: buildUserPrompt(inventory, count) }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 2048,
+        responseMimeType: "application/json",
+      },
     }),
-  });
+    }
+  );
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new AIUnavailableError(
-      `Anthropic API error: HTTP ${res.status}${detail ? ` — ${detail.slice(0, 300)}` : ""}`
+      `Gemini API error: HTTP ${res.status}${detail ? ` — ${detail.slice(0, 300)}` : ""}`
     );
   }
 
   const data = (await res.json()) as {
-    content?: Array<{ type: string; text?: string }>;
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{ text?: string }>;
+      };
+      finishReason?: string;
+    }>;
+    promptFeedback?: {
+      blockReason?: string;
+    };
   };
-  const textBlock = data.content?.find((c) => c.type === "text");
-  const raw = textBlock?.text ?? "";
+  const firstCandidate = data.candidates?.[0];
+  const raw = firstCandidate?.content?.parts
+    ?.map((part) => part.text ?? "")
+    .join("")
+    .trim() ?? "";
   if (!raw) {
-    throw new AIResponseParseError("Empty response from model", JSON.stringify(data).slice(0, 500));
+    const reason = data.promptFeedback?.blockReason
+      ? `Blocked by Gemini: ${data.promptFeedback.blockReason}`
+      : "Empty response from model";
+    throw new AIResponseParseError(reason, JSON.stringify(data).slice(0, 500));
+  }
+
+  if (firstCandidate?.finishReason === "MAX_TOKENS") {
+    throw new AIResponseParseError(
+      "Gemini response was truncated before the JSON completed. Try again or request fewer/shorter recommendations.",
+      raw.slice(0, 500)
+    );
   }
 
   const payload = extractJsonPayload(raw);
@@ -230,7 +262,7 @@ export async function generateAIRecipeRecommendations(
     parsed = JSON.parse(payload);
   } catch (err) {
     throw new AIResponseParseError(
-      `Failed to parse JSON: ${(err as Error).message}`,
+      `Failed to parse JSON: ${(err as Error).message}. The model may have returned incomplete or malformed JSON.`,
       raw.slice(0, 500)
     );
   }
